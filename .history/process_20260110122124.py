@@ -886,23 +886,9 @@ def solve_mip(initial_inventory_list_arg, time_limit=500):
         model += Overtime[t] >= WorkTime[t] - 定時
         model += Overtime[t] >= 0
         model += pulp.lpSum(IsProduced[i][t] for i in 品目) <= 5
-    try:
-        solver = pulp.GUROBI(msg=True, timelimit=time_limit)
-        # If Gurobi isn't actually available, raise to trigger fallback
-        if hasattr(solver, 'available') and not solver.available():
-            raise RuntimeError('Gurobi not available')
-    except Exception:
-        solver = pulp.PULP_CBC_CMD(msg=True, timeLimit=time_limit)
-    try:
-        model.solve(solver)
-    except pulp.PulpSolverError:
-        # If the chosen solver fails at solve time (e.g. Gurobi license issue),
-        # fallback to CBC once before giving up.
-        if not isinstance(solver, pulp.PULP_CBC_CMD):
-            solver = pulp.PULP_CBC_CMD(msg=True, timeLimit=time_limit)
-            model.solve(solver)
-        else:
-            raise
+    try: solver = pulp.GUROBI(msg=True, timelimit=time_limit)
+    except: solver = pulp.PULP_CBC_CMD(msg=True, timeLimit=time_limit)
+    model.solve(solver)
     status = pulp.LpStatus[model.status]
     if status in ['Optimal', 'Not Solved'] and pulp.value(model.objective) is not None:
         sch = [[0]*期間 for _ in range(品番数)]
