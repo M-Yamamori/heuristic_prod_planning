@@ -287,7 +287,6 @@ def check_jit_rule(item_idx, production_row, initial_inv_val, 期間):
 def _op_move_to_previous_day(new_solution, initial_inventory, 期間):
     """
     残業が発生している日の生産を余裕がある前日に移動する関数
-    （隣接した日のみ移動可能）
     """
     daily_loads = _compute_daily_loads(new_solution, 期間)
     
@@ -360,8 +359,9 @@ def _op_move_to_previous_day(new_solution, initial_inventory, 期間):
 
 def _op_fill_valleys(new_solution, initial_inventory, 期間):
     """
-    最も稼働が低い日に最も稼働が高い日から負荷を追加する関数
-    （離れた日も移動可能）
+    【谷埋め戦略】
+    最も稼働が低い日（谷）を見つけ、最も稼働が高い日（山）から仕事を奪ってくる。
+    離れた日への移動も許容する（Setup回数が減る可能性があるスワップ等も含めるとなお良いが今回は移動のみ）
     """
     daily_loads = _compute_daily_loads(new_solution, 期間)
     min_day = int(np.argmin(daily_loads))
@@ -370,7 +370,7 @@ def _op_fill_valleys(new_solution, initial_inventory, 期間):
     if min_day == max_day: return new_solution
     if daily_loads[max_day] - daily_loads[min_day] < 定時 * 0.2: return new_solution # 差が小さければやらない
 
-    # max_dayの品番をmin_dayへ移動
+    # max_dayの品目をmin_dayへ移動
     品番数 = len(initial_inventory)
     candidates = [i for i in range(品番数) if new_solution[i][max_day] > 0]
     random.shuffle(candidates)
@@ -380,9 +380,9 @@ def _op_fill_valleys(new_solution, initial_inventory, 期間):
     for i in candidates:
         amount = new_solution[i][max_day]
         
-        # 全量移動を優先（30%の確率で分割も許容）
+        # 全量移動を優先（段替えコスト削減のため）だが、確率で分割も許可
         move_qty = amount
-        if amount > 10 and random.random() < 0.3:
+        if amount > 10 and random.random() < 0.4:
             move_qty = int(amount / 2)
             
         # 仮移動
@@ -390,12 +390,12 @@ def _op_fill_valleys(new_solution, initial_inventory, 期間):
         new_solution[i][min_day] += move_qty
         
         # チェック
-        # 1.欠品
+        # 1. 欠品
         if min(calculate_item_inventory_profile(i, new_solution[i], initial_inventory[i], 期間)) < 0:
             new_solution[i] = list(original_sol[i])
             continue
         
-        # 2.JIT
+        # 2. JITルール
         if not check_jit_rule(i, new_solution[i], initial_inventory[i], 期間):
             new_solution[i] = list(original_sol[i])
             continue
@@ -405,9 +405,7 @@ def _op_fill_valleys(new_solution, initial_inventory, 期間):
     return original_sol
 
 def _op_eliminate_shortage(new_solution, initial_inventory, 期間):
-    """
-    欠品を解消するために生産を追加・移動する関数
-    """
+    """【最優先】欠品を解消するために生産を追加・移動する"""
     品番数 = len(initial_inventory)
     candidates = list(range(品番数))
     random.shuffle(candidates)
@@ -432,9 +430,7 @@ def _op_eliminate_shortage(new_solution, initial_inventory, 期間):
     return new_solution
 
 def _strat_high_volume_jit(new_solution, i, initial_inventory, 期間):
-    """
-    【大量品】毎日必要な分だけ作る補助関数
-    """
+    """【大量品・JIT戦略】毎日必要な分だけ作る"""
     current_inv = initial_inventory[i]
     for t in range(期間):
         dem = get_demand(i, t)
@@ -448,9 +444,7 @@ def _strat_high_volume_jit(new_solution, i, initial_inventory, 期間):
     return new_solution
 
 def _strat_low_mid_batch(new_solution, i, initial_inventory, 期間, batch_size=3):
-    """
-    【中・少量品】在庫切れ時にまとめて生産する補助関数
-    """
+    """【中・少量品・まとめ生産戦略】在庫切れ時にまとめて生産"""
     current_inv = initial_inventory[i]
     new_solution[i] = [0] * 期間
     
@@ -474,9 +468,7 @@ def _strat_low_mid_batch(new_solution, i, initial_inventory, 期間, batch_size=
     return new_solution
 
 def _op_optimize_item_pattern(new_solution, initial_inventory, 期間):
-    """
-    出荷量に応じた品番の生産パターンを適用する関数
-    """
+    """品目タイプに応じた生産パターンの適用"""
     品番数 = len(initial_inventory)
     i = random.randint(0, 品番数 - 1)
     itype = classify_item(i)
@@ -494,9 +486,7 @@ def _op_optimize_item_pattern(new_solution, initial_inventory, 期間):
         return _strat_low_mid_batch(new_solution, i, initial_inventory, 期間, batch_size=b_size) 
 
 def _op_push_production_forward(new_solution, initial_inventory, 期間):
-    """
-    生産を後ろ倒しして在庫を減らす関数
-    """
+    """生産を後ろ倒しして在庫を減らす"""
     original_sol = [row[:] for row in new_solution]
     品番数 = len(initial_inventory)
     
@@ -518,15 +508,14 @@ def _op_push_production_forward(new_solution, initial_inventory, 期間):
         new_solution[i][src_day] = 0
         new_solution[i][dst_day] += amount
         
-        # チェック
-        # 1.欠品
+        # 1. 在庫切れチェック
         inv_profile = calculate_item_inventory_profile(i, new_solution[i], initial_inventory[i], 期間)
         if min(inv_profile) < 0:
             new_solution[i][src_day] = amount
             new_solution[i][dst_day] -= amount
             continue
 
-        # 2.JIT
+        # 2. 【ルール徹底】在庫があるのに生産していないかチェック
         if not check_jit_rule(i, new_solution[i], initial_inventory[i], 期間):
             new_solution[i][src_day] = amount
             new_solution[i][dst_day] -= amount
@@ -537,17 +526,11 @@ def _op_push_production_forward(new_solution, initial_inventory, 期間):
     return original_sol
 
 def _op_reduce_setups(new_solution, initial_inventory, 期間):
-    """
-    段替えを減らすために隣接日の生産を統合する関数
-    """
     strategies = [(_strat_adjacent_merge, 4), (_strat_move_day, 3)]
     func = random.choices([s[0] for s in strategies], weights=[s[1] for s in strategies])[0]
     return func(new_solution, initial_inventory, 期間)
 
 def _strat_adjacent_merge(new_solution, initial_inventory, 期間):
-    """
-    隣接日の生産を統合する補助関数
-    """
     i = random.randint(0, len(new_solution)-1)
     if classify_item(i) == 'High': return new_solution
     for t in range(期間-1):
@@ -563,9 +546,6 @@ def _strat_adjacent_merge(new_solution, initial_inventory, 期間):
     return new_solution
 
 def _strat_move_day(new_solution, initial_inventory, 期間):
-    """
-    隣接日に生産を移動する補助関数
-    """
     i = random.randint(0, len(new_solution)-1)
     if classify_item(i) == 'High': return new_solution
     days = [t for t in range(期間) if new_solution[i][t] > 0]
@@ -583,9 +563,7 @@ def _strat_move_day(new_solution, initial_inventory, 期間):
     return new_solution
 
 def _compute_daily_loads(sol, 期間):
-    """
-    指定日の作業負荷を計算して返す補助関数
-    """
+    """指定スケジュールの各日の作業負荷を計算して返す"""
     品番数 = len(sol)
     loads = [0] * 期間
     for t in range(期間):
@@ -594,26 +572,25 @@ def _compute_daily_loads(sol, 期間):
                 loads[t] += 段替え時間 + (sol[i][t] / 込め数リスト[i]) * サイクルタイムリスト[i]
     return loads
 
-def _op_balance_workload(new_solution, initial_inventory, 期間):
-    """
-    負荷の分割移動・スワップ・複数品番同時移動を試みる関数
-    """
+
+def _op_balance_workload_improved(new_solution, initial_inventory, 期間):
+    """改良版負荷平準化: 分割移動・スワップ・複数品目同時移動を試みる"""
     original_sol = [row[:] for row in new_solution]
     品番数 = len(initial_inventory)
 
     daily_loads = _compute_daily_loads(new_solution, 期間)
     busy_day = int(np.argmax(daily_loads))
 
-    # まだ過負荷でない場合は確率でスキップ
+    # まだ過負荷でない場合は確率的に軽くスキップ
     if daily_loads[busy_day] <= 定時 * 1.02 and random.random() < 0.85:
         return new_solution
 
-    # 移動先を探す
+    # 移せる日を探す
     lazy_days = [t for t in range(期間) if daily_loads[t] < 定時 * 0.9]
     if not lazy_days:
         return new_solution
 
-    # 移動候補品番を探す
+    # 優先度の高い候補（Highは基本避ける）
     candidates = [i for i in range(品番数) if new_solution[i][busy_day] > 0 and classify_item(i) != 'High']
     random.shuffle(candidates)
 
@@ -631,12 +608,12 @@ def _op_balance_workload(new_solution, initial_inventory, 期間):
 
             for idx, dst in enumerate(targets):
                 if remaining <= 0: break
-                # 移動量決定
+                # 最初のターゲットに多めを入れる等の配分
                 portion = remaining if idx == 0 else int(moved / len(targets))
                 portion = max(1, min(portion, remaining))
 
                 added_time = 段替え時間 + (portion / 込め数リスト[i]) * サイクルタイムリスト[i]
-                # 宛先で過負荷にならないか確認
+                # 宛先で過負荷しないか確認（小さな余裕を許可）
                 if tmp_loads[dst] + added_time > 定時 * 1.05:
                     continue
 
@@ -649,20 +626,20 @@ def _op_balance_workload(new_solution, initial_inventory, 期間):
             if remaining > 0:
                 continue
 
-            # チェック
-            # 欠品・JIT
+            # 在庫・JITルールチェック
             if min(calculate_item_inventory_profile(i, tmp_sol[i], initial_inventory[i], 期間)) < 0:
                 continue
             if not check_jit_rule(i, tmp_sol[i], initial_inventory[i], 期間):
                 continue
 
-            # ピークが減っていなければ元に戻す
+            # ピーク削減の確認: ピークが減っていなければ受け入れない
             if max(tmp_loads) >= max(daily_loads) - 1e-6:
                 continue
 
             return tmp_sol
 
-    # スワップ操作
+    # スワップ操作: 遅い日と混ざっている品目を入れ替えられないか試す
+    # それぞれHighは避ける
     busy_candidates = [i for i in range(品番数) if new_solution[i][busy_day] > 0 and classify_item(i) != 'High']
     for dst in [t for t in range(期間) if daily_loads[t] < 定時 * 0.95]:
         dst_candidates = [j for j in range(品番数) if new_solution[j][dst] > 0 and classify_item(j) != 'High']
@@ -675,7 +652,7 @@ def _op_balance_workload(new_solution, initial_inventory, 期間):
                 tmp_sol[j][dst] -= amt; tmp_sol[j][busy_day] += amt
 
                 loads = _compute_daily_loads(tmp_sol, 期間)
-                # 交換によって最大負荷が下がって移動先が許容内なら受け入れ
+                # 交換で最大負荷が下がり、かつ宛先が許容内なら受け入れ
                 if loads[busy_day] <= daily_loads[busy_day] - 1 and loads[dst] <= 定時 * 1.05:
                     if min(calculate_item_inventory_profile(i, tmp_sol[i], initial_inventory[i], 期間)) < 0: continue
                     if min(calculate_item_inventory_profile(j, tmp_sol[j], initial_inventory[j], 期間)) < 0: continue
@@ -685,9 +662,65 @@ def _op_balance_workload(new_solution, initial_inventory, 期間):
 
     return original_sol
 
+
+def _op_balance_workload(new_solution, initial_inventory, 期間):
+    """ラッパー: 改良版を高確率で呼び出し、失敗したら既存の保守的な操作を試す"""
+    # 90% の確率で改良版を試す
+    if random.random() < 0.9:
+        out = _op_balance_workload_improved(new_solution, initial_inventory, 期間)
+        if out is not None and out != new_solution:
+            return out
+
+    # フォールバック: 元の単純な移動（従来ロジック）
+    original_sol = [row[:] for row in new_solution]
+    品番数 = len(initial_inventory)
+
+    daily_loads = _compute_daily_loads(new_solution, 期間)
+    busy_days_indices = np.argsort(daily_loads)[::-1]
+    busy_day = busy_days_indices[0]
+    if daily_loads[busy_day] <= 定時 and random.random() < 0.8:
+        return new_solution
+
+    lazy_days = [t for t in range(期間) if daily_loads[t] < 定時 * 0.9]
+    if not lazy_days: return new_solution
+
+    candidates = [i for i in range(品番数) if new_solution[i][busy_day] > 0]
+    random.shuffle(candidates)
+
+    for i in candidates:
+        target_candidates = list(lazy_days)
+        target_candidates.sort(key=lambda d: abs(d - busy_day))
+        amount = new_solution[i][busy_day]
+
+        for dst_day in target_candidates:
+            move_full = random.choice([True, False])
+            moved_qty = amount if move_full else int(amount * 0.5)
+            if moved_qty == 0: continue
+
+            # 仮移動
+            new_solution[i][busy_day] -= moved_qty
+            new_solution[i][dst_day] += moved_qty
+
+            # 1. 在庫切れチェック
+            if min(calculate_item_inventory_profile(i, new_solution[i], initial_inventory[i], 期間)) < 0:
+                new_solution[i][busy_day] += moved_qty
+                new_solution[i][dst_day] -= moved_qty
+                continue
+
+            # 2. 【ルール徹底】在庫があるのに生産していないかチェック
+            if not check_jit_rule(i, new_solution[i], initial_inventory[i], 期間):
+                new_solution[i][busy_day] += moved_qty
+                new_solution[i][dst_day] -= moved_qty
+                continue
+
+            return new_solution
+
+    return original_sol
+
 def _op_aggressive_gather(new_solution, initial_inventory, 期間):
     """
-    ある品番の生産を既存の生産日のうちの1日に全集約する関数
+    【強力】ある品番の生産を、既存の生産日のうちの1日に「全集約」する
+    （バラバラの生産を1回にまとめる）
     """
     品番数 = len(initial_inventory)
     
@@ -706,17 +739,18 @@ def _op_aggressive_gather(new_solution, initial_inventory, 期間):
     i = random.choice(candidates_items)
     prod_days = [t for t in range(期間) if new_solution[i][t] > 0]
     
-    # 集約先の日を決める（ランダム）
+    # 集約先（ターゲット）の日を決める（ランダム、または負荷が低い日）
     target_day = random.choice(prod_days)
     
-    # 集約
+    # 現在の生産量を保存（復元用）
     original_row = new_solution[i][:]
     
+    # 集約実行
     total_amount = sum(original_row)
-    new_solution[i] = [0] * 期間
-    new_solution[i][target_day] = total_amount # ターゲット日に全量入れる
+    new_solution[i] = [0] * 期間 # 一旦全部消す
+    new_solution[i][target_day] = total_amount # ターゲット日に全量
 
-    # 在庫コストが大きく増えないか確認
+    # 受入判定: 在庫コストが大きく増えないか確認
     def _item_inv_cost(row):
         inv = initial_inventory[i]
         cost = 0.0
@@ -731,13 +765,12 @@ def _op_aggressive_gather(new_solution, initial_inventory, 期間):
     before_cost = _item_inv_cost(original_row)
     after_cost = _item_inv_cost(new_solution[i])
 
-    # 在庫コストが10%を超えて増える場合は元に戻す
+    # 許容閾値: 在庫コストが 10% を超えて増える場合はリジェクト
     if after_cost > before_cost * 1.10:
         new_solution[i] = original_row
         return new_solution
 
-    # チェック
-    # JIT
+    # ルール違反チェック（在庫があるのに生産していない等）
     if not check_jit_rule(i, new_solution[i], initial_inventory[i], 期間):
         new_solution[i] = original_row
         return new_solution
@@ -748,25 +781,26 @@ def generate_neighbor(solution, initial_inventory, 期間=20):
     new_solution = [row[:] for row in solution]
     
     operations = [
-        _op_eliminate_shortage,
-        _op_optimize_item_pattern,
-        _op_balance_workload,
-        _op_move_to_previous_day,
-        _op_fill_valleys,
-        _op_reduce_setups,
-        _op_aggressive_gather,
-        _op_push_production_forward
+        _op_eliminate_shortage,      # 欠品解消（最重要）
+        _op_optimize_item_pattern,   # パターン再生成
+        _op_balance_workload,        # 既存の負荷分散（ランダム移動）
+        _op_move_to_previous_day,    # 【新規】前倒し（残業削減・強力）
+        _op_fill_valleys,            # 【新規】谷埋め
+        _op_reduce_setups,           # 段替え削減
+        _op_aggressive_gather,       # 【新規】強力集約（チェック付）
+        _op_push_production_forward  # 先送り（在庫削減）
     ]
     
-    # 重み
+    # 重み調整
+    # 残業コストが高いため、平準化系(balance, move_prev, smooth)の重みを高く設定
     weights = [
-        10, # eliminate_shortage
+        10, # eliminate_shortage (欠品は絶対回避したいので少し高め)
         5,  # optimize_item_pattern
-        30, # balance_workload
-        20, # move_to_previous_day
-        20, # fill_valleys
-        100, # reduce_setups
-        100, # aggressive_gather
+        30, # balance_workload (既存)
+        20, # move_to_previous_day (残業消しに効果大)
+        20, # fill_valleys (大域的な移動)
+        100, # reduce_setups 
+        100, # aggressive_gather (抑制)
         5   # push_production_forward
     ]
     

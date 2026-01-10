@@ -48,16 +48,12 @@ def main():
     # 3. 初期在庫の読み込み
     # ---------------------------------------------------------
     print("初期在庫の読み込みをしています...")
-    try:
-        adjusted_inventory = process.load_initial_inventory_from_csv(TARGET_FILE)
-    except:
-        print("初期在庫ファイルが見つからないので処理を中止します")
-        return
+    adjusted_inventory = process.load_initial_inventory_from_csv(TARGET_FILE)
 
     # ---------------------------------------------------------
-    # 4. 多スタートアニーリング法の実行
+    # 4. 最適化実行 (Multi-start SA)
     # ---------------------------------------------------------
-    print(f"最適化計算を開始します... (開始点: {NUM_STARTS}, 最大反復回数: {MAX_ITERATIONS}) ")
+    print(f"\n=== 最適化計算開始 (Starts={NUM_STARTS}, Iter={MAX_ITERATIONS}) ===")
     start_time = time.time()
     
     best_solution, best_cost = process.multi_start_simulated_annealing(
@@ -73,9 +69,9 @@ def main():
     # ---------------------------------------------------------
     # 5. 結果表示と保存
     # ---------------------------------------------------------
-    print("計算完了")
+    print(f"\n=== 計算完了 ===")
     print(f"最良コスト: {best_cost:,.2f}")
-    print(f"計算時間　: {calc_time:.2f}秒")
+    print(f"計算時間　: {calc_time:.2f} 秒")
 
     # CSV保存
     csv_filename = f"SA_results_{TARGET_FILE}.csv"
@@ -87,7 +83,7 @@ def main():
         'max_iterations': MAX_ITERATIONS
     }]
     process.save_results_to_csv(result_data, csv_filename)
-    print(f"結果をCSVに保存しました: {csv_filename}")
+    print(f"結果CSV保存: result/{csv_filename}")
 
     # 詳細結果プロットとCSV出力
     violation_count = process.plot_result(best_solution, adjusted_inventory, TARGET_FILE, "SA", 期間=20)
