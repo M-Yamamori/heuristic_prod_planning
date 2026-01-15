@@ -9,7 +9,6 @@ import glob
 import time
 import sys
 import math
-from collections import defaultdict
 
 # ==========================================
 # グローバル変数・設定
@@ -772,8 +771,7 @@ def generate_neighbor(solution, initial_inventory, 期間=20):
     ]
     
     chosen_op = random.choices(operations, weights=weights, k=1)[0]
-    result = chosen_op(new_solution, initial_inventory, 期間)
-    return result, chosen_op.__name__
+    return chosen_op(new_solution, initial_inventory, 期間)
 
 # ==========================================
 # SAメインロジック
@@ -809,11 +807,11 @@ def calculate_total_cost(production_schedule, initial_inventory, 期間=20):
                 
     return inv_cost + setup_cost + ot_cost + shortage_cost
 
-def simulated_annealing_scheduler(initial_inventory, max_iterations=300000, initial_temp=5000, cooling_rate=0.999, collect_neighbor_stats=False):
-    """SAスケジューラ with optional neighbor statistics collection"""
+def simulated_annealing_scheduler(initial_inventory, max_iterations=300000, initial_temp=5000, cooling_rate=0.999):
+    """SAスケジューラ"""
     品番数 = len(initial_inventory)
     期間 = 20
-    if 品番数 == 0: return None, None, None
+    if 品番数 == 0: return None, None
 
     # 初期解生成
     current_sol = [[0]*期間 for _ in range(品番数)]
@@ -824,48 +822,25 @@ def simulated_annealing_scheduler(initial_inventory, max_iterations=300000, init
     best_sol = [row[:] for row in current_sol]
     best_cost = current_cost
     temp = initial_temp
-
-    # stats
-    if collect_neighbor_stats:
-        chosen_counts = defaultdict(int)
-        accepted_counts = defaultdict(int)
-        best_counts = defaultdict(int)
-        total_iters = 0
-        accepted_moves = 0
-
+    
     start_time = time.time()
-
+    
     for it in range(max_iterations):
-        if collect_neighbor_stats: total_iters += 1
-        new_sol, op_name = generate_neighbor(current_sol, initial_inventory, 期間)
-        if collect_neighbor_stats: chosen_counts[op_name] += 1
+        new_sol = generate_neighbor(current_sol, initial_inventory, 期間)
         new_cost = calculate_total_cost(new_sol, initial_inventory)
         
         if new_cost < current_cost:
             current_sol = new_sol
             current_cost = new_cost
-            if collect_neighbor_stats:
-                accepted_counts[op_name] += 1
-                accepted_moves += 1
             if current_cost < best_cost:
                 best_sol = [row[:] for row in current_sol]
                 best_cost = current_cost
-                if collect_neighbor_stats:
-                    best_counts[op_name] += 1
         else:
             delta = new_cost - current_cost
             prob = math.exp(-delta / temp)
             if random.random() < prob:
                 current_sol = new_sol
                 current_cost = new_cost
-                if collect_neighbor_stats:
-                    accepted_counts[op_name] += 1
-                    accepted_moves += 1
-                if current_cost < best_cost:
-                    best_sol = [row[:] for row in current_sol]
-                    best_cost = current_cost
-                    if collect_neighbor_stats:
-                        best_counts[op_name] += 1
         
         temp *= cooling_rate
         if temp < 0.1: break
@@ -873,18 +848,7 @@ def simulated_annealing_scheduler(initial_inventory, max_iterations=300000, init
         if it % 50000 == 0:
             print(f"  Iter {it}: Best Cost {int(best_cost)} (Temp {int(temp)})")
             
-    if collect_neighbor_stats:
-        stats = {
-            'chosen': dict(chosen_counts),
-            'accepted': dict(accepted_counts),
-            'best': dict(best_counts),
-            'total_iters': total_iters,
-            'accepted_moves': accepted_moves
-        }
-    else:
-        stats = None
-
-    return best_sol, best_cost, stats
+    return best_sol, best_cost
 
 # ==========================================
 # ラッパー・実行関数
@@ -947,40 +911,15 @@ def solve_mip(initial_inventory_list_arg, time_limit=500):
         return sch, pulp.value(model.objective), {}
     return None, None, {}
 
-def multi_start_simulated_annealing(initial_inventory, num_starts=3, collect_neighbor_stats=False, method_name='SA', **sa_params):
+def multi_start_simulated_annealing(initial_inventory, num_starts=3, **sa_params):
     best_sol = None; best_val = float('inf')
     print(f"=== SA Optimization (Runs: {num_starts}) ===")
-
-    # aggregation containers
-    if collect_neighbor_stats:
-        agg_chosen = defaultdict(int)
-        agg_accepted = defaultdict(int)
-        agg_best = defaultdict(int)
-        per_run_records = []
-
+    
     for s in range(num_starts):
         print(f"Run {s+1}/{num_starts} started...")
-        sol, val, stats = simulated_annealing_scheduler(initial_inventory, collect_neighbor_stats=collect_neighbor_stats, **sa_params)
+        sol, val = simulated_annealing_scheduler(initial_inventory, **sa_params)
         print(f"Run {s+1} finished. Cost: {int(val)}")
         
-        if collect_neighbor_stats and stats:
-            # aggregate per-op stats
-            for op, cnt in stats['chosen'].items():
-                agg_chosen[op] += cnt
-            for op, cnt in stats['accepted'].items():
-                agg_accepted[op] += cnt
-            for op, cnt in stats['best'].items():
-                agg_best[op] += cnt
-            # per-run records
-            for op in set(list(stats['chosen'].keys()) + list(stats['accepted'].keys()) + list(stats['best'].keys())):
-                per_run_records.append({
-                    'run': s+1,
-                    'op': op,
-                    'chosen': stats['chosen'].get(op, 0),
-                    'accepted': stats['accepted'].get(op, 0),
-                    'best': stats['best'].get(op, 0)
-                })
-
         if val < best_val:
             best_sol = sol; best_val = val
             print(f"-> New Best Found!")
@@ -994,27 +933,7 @@ def multi_start_simulated_annealing(initial_inventory, num_starts=3, collect_nei
                 print(f"  {品番リスト[idx]}: {qty:.1f}")
         else:
             print("\n>>> No Shortages Detected. <<<")
-
-    # save aggregated stats
-    if collect_neighbor_stats:
-        os.makedirs('result', exist_ok=True)
-        # aggregate summary
-        ops = sorted(set(list(agg_chosen.keys()) + list(agg_accepted.keys()) + list(agg_best.keys())), key=lambda x: -agg_chosen.get(x, 0))
-        rows = []
-        for op in ops:
-            chosen = agg_chosen.get(op, 0)
-            accepted = agg_accepted.get(op, 0)
-            best = agg_best.get(op, 0)
-            acc_rate = accepted / chosen if chosen > 0 else 0
-            best_rate = best / chosen if chosen > 0 else 0
-            rows.append({'op': op, 'chosen': chosen, 'accepted': accepted, 'best': best, 'accept_rate': acc_rate, 'best_rate': best_rate})
-        df_sum = pd.DataFrame(rows)
-        df_sum.to_csv(f'result/{method_name}_neighbor_stats_summary.csv', index=False, encoding='utf-8-sig')
-        # per-run
-        df_runs = pd.DataFrame(per_run_records)
-        df_runs.to_csv(f'result/{method_name}_neighbor_stats_per_run.csv', index=False, encoding='utf-8-sig')
-        print(f"Neighbor stats saved: result/{method_name}_neighbor_stats_summary.csv and per-run file")
-
+            
     return best_sol, best_val
 
 def calculate_shortage_by_item(production_schedule, initial_inventory, 期間=20):
@@ -1154,7 +1073,7 @@ def plot_result(production_schedule, initial_inventory, file_name, method_name="
     inv_data = np.array(inventory_by_item).T
     bot = np.zeros(期間)
     for i in range(min(10, 品番数)):
-        ax2.bar(periods, inv_data[i], bottom=bot, label=str(i+1), color=colors[i], alpha=0.8)
+        ax2.bar(periods, inv_data[i], bottom=bot, label=str(i), color=colors[i], alpha=0.8)
         bot += inv_data[i]
     if 品番数 > 10: ax2.bar(periods, np.sum(inv_data[10:], axis=0), bottom=bot, label='Others', color='gray')
     ax2.set_title('在庫量', fontsize=18, fontweight='bold'); ax2.legend(fontsize=16, loc='upper right')
@@ -1166,9 +1085,9 @@ def plot_result(production_schedule, initial_inventory, file_name, method_name="
     prod_data = np.array(production_by_item).T
     bot = np.zeros(期間)
     for i in range(min(10, 品番数)):
-        ax3.bar(periods, prod_data[i], bottom=bot, label=str(i+1), color=colors[i], alpha=0.8)
+        ax3.bar(periods, prod_data[i], bottom=bot, label=str(i), color=colors[i], alpha=0.8)
         bot += prod_data[i]
-    ax3.set_title('生産量', fontsize=18, fontweight='bold'); ax3.legend(fontsize=12, loc='upper right', bbox_to_anchor=(0.98, 0.98), bbox_transform=ax3.transAxes, ncol=1)
+    ax3.set_title('生産量', fontsize=18, fontweight='bold'); ax3.legend(fontsize=16)
     ax3.set_xticks(range(1, 期間+1))
     ax3.set_xticklabels([str(i) for i in range(1, 期間+1)], fontsize=15)
     ax3.tick_params(axis='y', labelsize=15)
@@ -1177,7 +1096,7 @@ def plot_result(production_schedule, initial_inventory, file_name, method_name="
     short_data = np.array(shortage_by_item).T
     bot = np.zeros(期間)
     for i in range(min(10, 品番数)):
-        ax4.bar(periods, short_data[i], bottom=bot, label=str(i+1), color=colors[i], alpha=0.8)
+        ax4.bar(periods, short_data[i], bottom=bot, label=str(i), color=colors[i], alpha=0.8)
         bot += short_data[i]
     ax4.set_title('出荷遅れ量', fontsize=18, fontweight='bold'); ax4.legend(fontsize=16, loc='upper right')
     ax4.set_xticks(range(1, 期間+1))
